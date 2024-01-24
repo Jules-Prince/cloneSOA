@@ -1,0 +1,274 @@
+version: "3.8"
+
+services:
+
+  laboratory:
+    image: marsy/laboratory
+    ports:
+      - 3006:3006
+    environment:
+      - PAYLOAD_URL=http://payload:3007
+
+  rocketlauncher:
+    image: marsy/rocket-launcher
+    #env_file:
+    #  - .env.docker-compose
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  rocket:
+    image: marsy/rocket
+    ports:
+      - "3000:3000"
+    #env_file:
+    #  - .env.docker-compose
+    depends_on:
+      rocketlauncher:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    environment:
+      - LAUNCHER_URL=http://rocketlauncher:3020
+      - TELEMETRY_URL=http://telemetry:3004
+      - PAYLOAD_DEPARTMENT_URL=http://payload-department:3003
+      - PAYLOAD_URL=http://payload:3007
+      - STAGE1_URL=http://stage1:3013
+      - STAGE2_URL=http://stage2:3013
+      - MISSION_COMMANDER_URL=http://mission-status:3005
+      - WEB_CASTER_URL=http://web-caster:3015
+    restart: always
+
+  stage1:
+    image: marsy/stage
+    ports:
+      - "3013:3013"
+    #env_file:
+    #  - .env.docker-compose
+    environment:
+      - TELEMETRY_URL=http://telemetry:3004
+      - MISSION_COMMANDER_URL=http://mission-status:3005
+      - WEB_CASTER_URL=http://web-caster:3015
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  stage2:
+    image: marsy/stage
+    ports:
+      - "3014:3013"
+    #env_file:
+    #  - .env.docker-compose
+    environment:
+      - TELEMETRY_URL=http://telemetry:3004
+      - MISSION_COMMANDER_URL=http://mission-status:3005
+      - WEB_CASTER_URL=http://web-caster:3015
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  telemetry:
+    image: marsy/telemetry
+    ports:
+      - "3004:3004"
+    #env_file:
+    #  - .env.docker-compose
+    depends_on:
+      rocket:
+        condition: service_started
+      database_telemetry:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+    environment:
+      - ROCKET_URL=http://rocket:3000
+      - MISSION_COMMANDER_URL=http://mission-status:3005
+      - STAGE1_URL=http://stage1:3013
+      - STAGE2_URL=http://stage2:3013
+      - DATABASE_URL=mongodb://database_telemetry:27017
+    
+
+  weather-status:
+    image: marsy/weather-status
+    #env_file:
+    #  - .env.docker-compose
+    ports:
+      - "3001:3001"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  web-caster:
+    image: marsy/webcaster
+    ports:
+      - "3015:3015"
+    #env_file:
+    #  - .env.docker-compose
+    depends_on:
+      stage1:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+
+  mission-status:
+    image: marsy/mission-status
+    ports:
+      - "3005:3005"
+    #env_file:
+    # - .env.docker-compose
+    depends_on:
+      rocket:
+        condition: service_started
+      weather-status:
+        condition: service_started
+      rocketlauncher:
+        condition: service_started
+      payload-department:
+        condition: service_started
+      telemetry:
+        condition: service_started
+      kafka:
+         condition: service_healthy
+      cassandra:
+        condition: service_healthy
+
+
+
+    
+    #restart: always
+    environment:
+      - ROCKET_URL=http://rocket:3000
+      - WEATHER_URL=http://weather-status:3001
+    #healthcheck:
+     # test: ["CMD-SHELL", "check-kafka.sh"]
+      #interval: 30s
+      #timeout: 10s
+      #retries: 5
+
+  database_telemetry:
+    image: mongo:6.0
+    restart: always
+    ports:
+      - '27017:27017'
+
+  payload-department:
+    image: marsy/payload-department
+    ports:
+      - "3003:3003"
+    #env_file:
+    #  - .env.docker-compose
+    environment:
+      - PAYLOAD_URL=http://payload:3007
+      - LABORATORY_URl=http://laboratory:3006
+      - DATABASE_URL=mongodb://database_payload:27017
+
+    depends_on:
+      payload:
+        condition: service_started
+      database_payload:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+
+  database_payload:
+    image: mongo:6.0
+    restart: always
+    ports:
+      - '27019:27017'
+
+  payload:
+    image: marsy/payload
+    ports:
+      - "3007:3007"
+    #env_file:
+    #  - .env.docker-compose
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - LABORATORY_URL=http://laboratory:3006
+
+  cassandra:
+    image: cassandra:latest
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      - CASSANDRA_SEEDS=cassandra
+      - CASSANDRA_KEYSPACE=logsdb
+      - CASSANDRA_LISTEN_ADDRESS=cassandra  # Set Cassandra's listen address to the container name
+      - CASSANDRA_BROADCAST_ADDRESS=cassandra
+    volumes:
+      #- ./cassandra-data:/var/lib/cassandra
+      - ./init-scripts.cql:/docker-entrypoint-initdb.d/init-scripts.cql
+    #command: [ "cqlsh", "cassandra", "9042", "-f", "/docker-entrypoint-initdb.d/init-scripts.cql" ]
+    #command: /bin/bash -c "sleep 30 && while ! cqlsh 172.0.0.1 9042 -f /docker-entrypoint-initdb.d/init-scripts.cql; do sleep 10; done && echo script executed"
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+    logging:
+      driver: none
+
+
+
+  #cassandra-load-keyspace:
+   # container_name: cassandra-load-keyspace
+    #image: cassandra:latest
+    #depends_on:
+     #   cassandra:
+      #    condition: service_healthy
+    #volumes:
+     # - ./init-scripts.cql:/docker-entrypoint-initdb.d/init-scripts.cql
+    #command: /bin/bash -c "sleep 60 && echo loading cassandra keyspace && cqlsh cassandra 9042 -f /docker-entrypoint-initdb.d/init-scripts.cql && echo script executed"
+    #restart: always # Add this line to enable automatic restarts on failure
+
+  kafka:
+    image: docker.io/bitnami/kafka:3.5
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+      - "9094:9094"
+    environment:
+      - KAFKA_CFG_NODE_ID=0
+      - KAFKA_CFG_PROCESS_ROLES=controller,broker
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9094
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=0@kafka:9093
+      - KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=false
+      - KAFKA_URL = kafka:9092
+    healthcheck:
+      #test: "topics=$(kafka-topics.sh --bootstrap-server kafka:9092 --list) && { [[ $topics == *'test'* ]] && [[ $topics == *'test2'* ]] && [[ $topics == *'monitoring'* ]] && [[ $topics == *'checkup'* ]] && [[ $topics == *'launch'* ]] && [[ $topics == *'remote-control'* ]]; } && echo 'All specified topics are healthy' || echo 'Not all specified topics are healthy'"
+      test: "kafka-topics.sh --bootstrap-server kafka:9092 --list | grep remote-control"
+      interval: 10s
+      timeout: 15s
+      retries: 50
+
+  init-kafka:
+    image: docker.io/bitnami/kafka:3.5
+    depends_on:
+      kafka:
+        condition: service_started
+    entrypoint: [ '/bin/sh', '-c' ]
+    command: |
+      "
+      # blocks until kafka is reachable
+      kafka-topics --bootstrap-server kafka:9092 --list
+
+      echo -e 'Creating kafka topics'
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic test --replication-factor 1 --partitions 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic test2 --replication-factor 1 --partitions 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic checkup --replication-factor 1 --partitions 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic launch --replication-factor 1 --partitions 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic monitoring --replication-factor 1 --partitions 1
+      kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic remote-control --replication-factor 1 --partitions 1
+
+      echo -e 'Successfully created the following topics:'
+      kafka-topics --bootstrap-server kafka:9092 --list
+      "
